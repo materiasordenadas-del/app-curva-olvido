@@ -43,7 +43,16 @@ public final class FsrsMemoryEngine {
             String section,
             String notes,
             long createdAt) {
-        Card card = Card.builder().build();
+        // Crear una pagina representa que el tema acaba de ser aprendido por primera vez.
+        // Se registra ese punto inicial solo dentro de FSRS para que la memoria comience llena;
+        // no se crea un evento de repaso del usuario ni se altera la cobertura.
+        CardAndReviewLog initialLearning =
+                scheduler.reviewCard(
+                        Card.builder().build(),
+                        ReviewRating.GOOD.toFsrsRating(),
+                        Instant.ofEpochMilli(createdAt),
+                        null);
+        Card card = initialLearning.card();
         StudyTopic topic = new StudyTopic();
         topic.id = id;
         topic.name = safe(name);
@@ -52,7 +61,7 @@ public final class FsrsMemoryEngine {
         topic.notes = safe(notes);
         topic.createdAt = createdAt;
         topic.fsrsCardJson = card.toJson();
-        topic.nextReviewAt = Math.max(createdAt, card.getDue().toEpochMilli());
+        topic.nextReviewAt = card.getDue().toEpochMilli();
         topic.scheduleGraceDeadline = topic.nextReviewAt + REVIEW_GRACE_PERIOD_MS;
         topic.scheduleStatus = ReviewScheduleStatus.SCHEDULED;
         return topic;

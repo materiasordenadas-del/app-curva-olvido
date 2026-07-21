@@ -10,6 +10,19 @@ public class FsrsMemoryEngineTest {
     private static final long DAY = Duration.ofDays(1).toMillis();
 
     @Test
+    public void newTopicStartsFullAndThenForgetsOverTime() {
+        FsrsMemoryEngine engine = new FsrsMemoryEngine();
+        long now = System.currentTimeMillis();
+        StudyTopic topic = engine.newTopic(99L, "Tema nuevo", "Medicina", "Renal", "", now);
+
+        double immediately = engine.retrievability(topic, now);
+        double later = engine.retrievability(topic, now + 30 * DAY);
+
+        assertTrue(immediately >= 0.99);
+        assertTrue(later < immediately);
+    }
+
+    @Test
     public void successfulReviewStartsNearFullRetrievability() {
         FsrsMemoryEngine engine = new FsrsMemoryEngine();
         long now = System.currentTimeMillis();
