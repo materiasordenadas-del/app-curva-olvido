@@ -122,7 +122,7 @@ public final class ForgettingCurveModel {
 
     public static ForgettingCurveModel build(
             StudyTopic topic, FsrsMemoryEngine engine, long now) {
-        return build(topic, engine, now, DEFAULT_TARGET_RETENTION);
+        return build(topic, engine, now, engine.desiredRetention());
     }
 
     public static ForgettingCurveModel build(
