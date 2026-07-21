@@ -128,6 +128,17 @@ public class ForgettingCurveModelTest {
     }
 
     @Test
+    public void modelUsesPersonalizedEngineTarget() {
+        FsrsMemoryEngine engine = new FsrsMemoryEngine(0.95);
+        long now = 1_720_000_000_000L;
+        StudyTopic topic = engine.newTopic(6L, "Tema", "Medicina", "Renal", "", now);
+
+        ForgettingCurveModel model = ForgettingCurveModel.build(topic, engine, now);
+
+        assertEquals(0.95, model.targetRetention, 0.000001);
+    }
+
+    @Test
     public void stabilityRepresentsNinetyPercentRetrievability() {
         long reviewedAt = 1_720_000_000_000L;
         double stabilityDays = 12.0;
