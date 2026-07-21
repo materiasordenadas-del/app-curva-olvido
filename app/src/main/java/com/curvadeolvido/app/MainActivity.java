@@ -2,9 +2,7 @@ package com.curvadeolvido.app;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlarmManager;
 import android.app.AlertDialog;
-import android.app.PendingIntent;
 import android.app.TimePickerDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -13,6 +11,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Base64;
@@ -36,6 +35,8 @@ import com.curvadeolvido.app.domain.ReviewResult;
 import com.curvadeolvido.app.domain.ReviewScheduleStatus;
 import com.curvadeolvido.app.domain.ScheduledReview;
 import com.curvadeolvido.app.domain.StudyTopic;
+import com.curvadeolvido.app.notifications.ReminderNotifications;
+import com.curvadeolvido.app.notifications.ReminderScheduler;
 import com.curvadeolvido.app.visualization.ForgettingCurveView;
 import java.io.ByteArrayOutputStream;
 import java.text.DateFormat;
@@ -47,7 +48,10 @@ import java.util.TreeMap;
 import java.util.UUID;
 
 public class MainActivity extends Activity {
+    public static final String EXTRA_TOPIC_ID = "open_topic_id";
+
     private static final int BLUE = Color.rgb(55, 115, 220);
+    private static final int REQUEST_NOTIFICATIONS = 22;
 
     private final ArrayList<StudyTopic> topics = new ArrayList<>();
     private final FsrsMemoryEngine memoryEngine = new FsrsMemoryEngine();
@@ -59,35 +63,47 @@ public class MainActivity extends Activity {
     private int reminderMinute = 0;
     private String pendingPhoto = "";
     private TextView photoStatus;
+    private long pendingTopicId = -1L;
+    private boolean dataLoaded;
 
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
-        prefs = getSharedPreferences("curva", MODE_PRIVATE);
-        reminderHour = prefs.getInt("hour", 19);
-        reminderMinute = prefs.getInt("minute", 0);
+        prefs = getSharedPreferences(ReminderScheduler.PREFS, MODE_PRIVATE);
+        reminderHour = prefs.getInt(ReminderScheduler.KEY_HOUR, 19);
+        reminderMinute = prefs.getInt(ReminderScheduler.KEY_MINUTE, 0);
+        pendingTopicId = readRequestedTopic(getIntent());
         repository = new StudyRepository(this, memoryEngine);
         showLoading();
-
-        if (android.os.Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 22);
-        }
 
         repository.initialize(
                 prefs,
                 loaded -> {
                     topics.clear();
                     topics.addAll(loaded);
-                    showHome();
-                    if (!prefs.getBoolean("configured", false)) {
+                    dataLoaded = true;
+                    if (!prefs.getBoolean(ReminderScheduler.KEY_CONFIGURED, false)) {
+                        showHome();
                         chooseTime(true);
                     } else {
-                        scheduleDailyReminder();
+                        ReminderScheduler.ensureDaily(this);
+                        navigateAfterLoad();
                     }
                 },
                 this::showDataError);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        long requested = readRequestedTopic(intent);
+        if (requested > 0) {
+            pendingTopicId = requested;
+        }
+        if (dataLoaded) {
+            navigateAfterLoad();
+        }
     }
 
     @Override
@@ -96,6 +112,32 @@ public class MainActivity extends Activity {
             repository.close();
         }
         super.onDestroy();
+    }
+
+    private long readRequestedTopic(Intent intent) {
+        return intent == null ? -1L : intent.getLongExtra(EXTRA_TOPIC_ID, -1L);
+    }
+
+    private void navigateAfterLoad() {
+        if (pendingTopicId > 0) {
+            StudyTopic topic = findTopic(pendingTopicId);
+            pendingTopicId = -1L;
+            if (topic != null) {
+                ReminderNotifications.cancelTopic(this, topic.id);
+                showPage(topic);
+                return;
+            }
+        }
+        showHome();
+    }
+
+    private StudyTopic findTopic(long topicId) {
+        for (StudyTopic topic : topics) {
+            if (topic.id == topicId) {
+                return topic;
+            }
+        }
+        return null;
     }
 
     private void showLoading() {
@@ -125,9 +167,32 @@ public class MainActivity extends Activity {
         create.setOnClickListener(v -> addPage());
         content.addView(create);
 
-        Button clock = darkButton("Hora de recordatorios");
+        Button clock =
+                darkButton(
+                        String.format(
+                                Locale.getDefault(),
+                                "Hora diaria: %02d:%02d",
+                                reminderHour,
+                                reminderMinute));
         clock.setOnClickListener(v -> chooseTime(false));
         content.addView(clock);
+
+        boolean enabled = ReminderNotifications.notificationsEnabled(this);
+        Button notifications =
+                darkButton(enabled ? "Notificaciones activas" : "Activar notificaciones");
+        notifications.setOnClickListener(
+                v -> {
+                    if (enabled) {
+                        Toast.makeText(
+                                        this,
+                                        "Los avisos se enviarán cerca de la hora diaria elegida.",
+                                        Toast.LENGTH_SHORT)
+                                .show();
+                    } else {
+                        explainAndRequestNotificationPermission();
+                    }
+                });
+        content.addView(notifications);
 
         addPrioritySummary();
         addLibrary();
@@ -165,7 +230,10 @@ public class MainActivity extends Activity {
             row.setLayoutParams(params);
 
             TextView percent =
-                    text(Math.round(currentMemory(topic)) + "%", 20, memoryColor(currentMemory(topic)));
+                    text(
+                            Math.round(currentMemory(topic)) + "%",
+                            20,
+                            memoryColor(currentMemory(topic)));
             percent.setGravity(Gravity.CENTER);
             row.addView(percent, new LinearLayout.LayoutParams(64, 54));
 
@@ -234,6 +302,7 @@ public class MainActivity extends Activity {
     }
 
     private void showPage(StudyTopic topic) {
+        ReminderNotifications.cancelTopic(this, topic.id);
         ScrollView scroll = new ScrollView(this);
         content = column(Color.rgb(247, 249, 253), 28, 28, 28, 45);
         scroll.addView(content);
@@ -418,7 +487,7 @@ public class MainActivity extends Activity {
                                     topic,
                                     () -> {
                                         topics.add(topic);
-                                        scheduleDailyReminder();
+                                        ReminderScheduler.ensureDaily(this);
                                         showHome();
                                     },
                                     this::showDataError);
@@ -504,7 +573,8 @@ public class MainActivity extends Activity {
                                     result.event,
                                     result.nextSchedule,
                                     () -> {
-                                        scheduleDailyReminder();
+                                        ReminderScheduler.cancelTopicSnooze(this, topic.id);
+                                        ReminderScheduler.ensureDaily(this);
                                         showPage(topic);
                                     },
                                     this::showDataError);
@@ -541,12 +611,22 @@ public class MainActivity extends Activity {
                         (view, hour, minute) -> {
                             reminderHour = hour;
                             reminderMinute = minute;
-                            prefs.edit()
-                                    .putInt("hour", hour)
-                                    .putInt("minute", minute)
-                                    .putBoolean("configured", true)
-                                    .apply();
-                            scheduleDailyReminder();
+                            ReminderScheduler.configureDaily(this, hour, minute);
+                            Toast.makeText(
+                                            this,
+                                            String.format(
+                                                    Locale.getDefault(),
+                                                    "Recordatorio diario configurado a las %02d:%02d",
+                                                    hour,
+                                                    minute),
+                                            Toast.LENGTH_SHORT)
+                                    .show();
+                            explainAndRequestNotificationPermission();
+                            if (first && pendingTopicId > 0) {
+                                navigateAfterLoad();
+                            } else {
+                                showHome();
+                            }
                         },
                         reminderHour,
                         reminderMinute,
@@ -555,28 +635,49 @@ public class MainActivity extends Activity {
         dialog.show();
     }
 
-    private void scheduleDailyReminder() {
-        java.util.Calendar calendar = java.util.Calendar.getInstance();
-        calendar.set(java.util.Calendar.HOUR_OF_DAY, reminderHour);
-        calendar.set(java.util.Calendar.MINUTE, reminderMinute);
-        calendar.set(java.util.Calendar.SECOND, 0);
-        calendar.set(java.util.Calendar.MILLISECOND, 0);
-        if (calendar.getTimeInMillis() <= System.currentTimeMillis()) {
-            calendar.add(java.util.Calendar.DAY_OF_YEAR, 1);
+    private void explainAndRequestNotificationPermission() {
+        if (ReminderNotifications.notificationsEnabled(this)) {
+            return;
         }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            Toast.makeText(
+                            this,
+                            "Activa las notificaciones de la aplicación desde los ajustes del sistema.",
+                            Toast.LENGTH_LONG)
+                    .show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Activar recordatorios")
+                .setMessage(
+                        "La aplicación usará notificaciones para avisarte de los temas que ya alcanzaron su fecha de repaso. Posponer un aviso no modifica la curva ni registra un repaso.")
+                .setNegativeButton("Ahora no", null)
+                .setPositiveButton(
+                        "Activar",
+                        (dialog, which) ->
+                                requestPermissions(
+                                        new String[] {Manifest.permission.POST_NOTIFICATIONS},
+                                        REQUEST_NOTIFICATIONS))
+                .show();
+    }
 
-        PendingIntent pendingIntent =
-                PendingIntent.getBroadcast(
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_NOTIFICATIONS) {
+            return;
+        }
+        boolean granted =
+                grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        Toast.makeText(
                         this,
-                        9001,
-                        new Intent(this, ReminderReceiver.class).putExtra("daily", true),
-                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        ((AlarmManager) getSystemService(ALARM_SERVICE))
-                .setInexactRepeating(
-                        AlarmManager.RTC_WAKEUP,
-                        calendar.getTimeInMillis(),
-                        AlarmManager.INTERVAL_DAY,
-                        pendingIntent);
+                        granted
+                                ? "Recordatorios activados"
+                                : "No se podrán mostrar recordatorios hasta que habilites las notificaciones.",
+                        Toast.LENGTH_LONG)
+                .show();
+        showHome();
     }
 
     private double currentMemory(StudyTopic topic) {
