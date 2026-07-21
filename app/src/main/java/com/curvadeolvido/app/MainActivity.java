@@ -26,6 +26,8 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+import com.curvadeolvido.app.dashboard.DashboardModel;
+import com.curvadeolvido.app.dashboard.ReviewLoadView;
 import com.curvadeolvido.app.data.StudyRepository;
 import com.curvadeolvido.app.domain.FsrsMemoryEngine;
 import com.curvadeolvido.app.domain.MemorySnapshot;
@@ -37,9 +39,11 @@ import com.curvadeolvido.app.domain.ScheduledReview;
 import com.curvadeolvido.app.domain.StudyTopic;
 import com.curvadeolvido.app.notifications.ReminderNotifications;
 import com.curvadeolvido.app.notifications.ReminderScheduler;
+import com.curvadeolvido.app.settings.StudyPreferences;
 import com.curvadeolvido.app.visualization.ForgettingCurveView;
 import java.io.ByteArrayOutputStream;
 import java.text.DateFormat;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -54,8 +58,8 @@ public class MainActivity extends Activity {
     private static final int REQUEST_NOTIFICATIONS = 22;
 
     private final ArrayList<StudyTopic> topics = new ArrayList<>();
-    private final FsrsMemoryEngine memoryEngine = new FsrsMemoryEngine();
 
+    private FsrsMemoryEngine memoryEngine;
     private SharedPreferences prefs;
     private StudyRepository repository;
     private LinearLayout content;
@@ -72,6 +76,8 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(ReminderScheduler.PREFS, MODE_PRIVATE);
         reminderHour = prefs.getInt(ReminderScheduler.KEY_HOUR, 19);
         reminderMinute = prefs.getInt(ReminderScheduler.KEY_MINUTE, 0);
+        memoryEngine =
+                new FsrsMemoryEngine(StudyPreferences.readDesiredRetention(prefs));
         pendingTopicId = readRequestedTopic(getIntent());
         repository = new StudyRepository(this, memoryEngine);
         showLoading();
@@ -154,7 +160,7 @@ public class MainActivity extends Activity {
         scroll.addView(content);
         setContentView(scroll);
 
-        content.addView(text("Biblioteca de estudio", 28, Color.WHITE));
+        content.addView(text("Panel de estudio", 28, Color.WHITE));
         TextView subtitle =
                 text(
                         "Cobertura, recuperación y cumplimiento se registran por separado",
@@ -177,6 +183,14 @@ public class MainActivity extends Activity {
         clock.setOnClickListener(v -> chooseTime(false));
         content.addView(clock);
 
+        Button retention =
+                darkButton(
+                        "Objetivo de recuerdo: "
+                                + StudyPreferences.percentageLabel(
+                                        memoryEngine.desiredRetention()));
+        retention.setOnClickListener(v -> chooseRetention());
+        content.addView(retention);
+
         boolean enabled = ReminderNotifications.notificationsEnabled(this);
         Button notifications =
                 darkButton(enabled ? "Notificaciones activas" : "Activar notificaciones");
@@ -194,7 +208,7 @@ public class MainActivity extends Activity {
                 });
         content.addView(notifications);
 
-        addPrioritySummary();
+        addDashboard();
         addLibrary();
 
         if (topics.isEmpty()) {
@@ -208,19 +222,79 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addPrioritySummary() {
+    private void addDashboard() {
         if (topics.isEmpty()) {
             return;
         }
-        TextView title =
-                text("Menor probabilidad estimada de recuerdo", 19, Color.rgb(215, 205, 250));
-        title.setPadding(4, 24, 4, 7);
+        DashboardModel model =
+                DashboardModel.build(
+                        topics,
+                        memoryEngine,
+                        System.currentTimeMillis(),
+                        ZoneId.systemDefault());
+
+        TextView title = text("Resumen operativo", 20, Color.rgb(215, 205, 250));
+        title.setPadding(4, 24, 4, 8);
         content.addView(title);
 
-        ArrayList<StudyTopic> ordered = new ArrayList<>(topics);
-        ordered.sort(Comparator.comparingDouble(this::currentMemory));
-        for (int index = 0; index < Math.min(3, ordered.size()); index++) {
-            StudyTopic topic = ordered.get(index);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(16, 14, 16, 16);
+        card.setBackground(round(Color.rgb(42, 42, 46), 14));
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
+        cardParams.setMargins(0, 0, 0, 8);
+        card.setLayoutParams(cardParams);
+
+        card.addView(
+                text(
+                        "Ahora: "
+                                + model.dueNow
+                                + " pendientes · "
+                                + model.missed
+                                + " omitidos · próximos 7 días: "
+                                + model.upcomingSevenDays,
+                        15,
+                        Color.WHITE));
+
+        String memorySummary =
+                model.reviewedTopics == 0
+                        ? "Aún no hay suficientes repasos para estimar el recuerdo medio."
+                        : "Recuerdo medio: "
+                                + Math.round(model.averageRetrievability * 100)
+                                + "% · Bajo objetivo: "
+                                + model.belowTarget;
+        TextView memoryLine = text(memorySummary, 14, Color.LTGRAY);
+        memoryLine.setPadding(0, 6, 0, 0);
+        card.addView(memoryLine);
+
+        String punctuality =
+                model.completedOnTime + model.completedLate == 0
+                        ? "Puntualidad: sin suficientes eventos"
+                        : "Puntualidad: "
+                                + Math.round(model.punctualityRate * 100)
+                                + "% · Repasos últimos 7 días: "
+                                + model.reviewedLastSevenDays;
+        TextView punctualityLine = text(punctuality, 14, Color.LTGRAY);
+        punctualityLine.setPadding(0, 4, 0, 10);
+        card.addView(punctualityLine);
+
+        ReviewLoadView loadView = new ReviewLoadView(this, model);
+        card.addView(loadView, new LinearLayout.LayoutParams(-1, dp(205)));
+        content.addView(card);
+
+        TextView priorityTitle = text("Prioridades", 19, Color.rgb(215, 205, 250));
+        priorityTitle.setPadding(4, 14, 4, 6);
+        content.addView(priorityTitle);
+        if (model.priorities.isEmpty()) {
+            content.addView(
+                    text(
+                            "No hay repasos vencidos ni temas por debajo del objetivo.",
+                            14,
+                            Color.LTGRAY));
+            return;
+        }
+
+        for (DashboardModel.PriorityItem item : model.priorities) {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(14, 10, 14, 10);
@@ -231,18 +305,22 @@ public class MainActivity extends Activity {
 
             TextView percent =
                     text(
-                            Math.round(currentMemory(topic)) + "%",
-                            20,
-                            memoryColor(currentMemory(topic)));
+                            Math.round(item.retrievability * 100) + "%",
+                            19,
+                            priorityColor(item.kind));
             percent.setGravity(Gravity.CENTER);
             row.addView(percent, new LinearLayout.LayoutParams(64, 54));
 
             LinearLayout labels = new LinearLayout(this);
             labels.setOrientation(LinearLayout.VERTICAL);
-            labels.addView(text(topic.name, 16, Color.WHITE));
-            labels.addView(text(dueText(topic), 13, Color.LTGRAY));
+            labels.addView(text(item.topic.name, 16, Color.WHITE));
+            labels.addView(
+                    text(
+                            priorityLabel(item.kind) + " · " + dueText(item.topic),
+                            13,
+                            Color.LTGRAY));
             row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-            row.setOnClickListener(v -> showPage(topic));
+            row.setOnClickListener(v -> showPage(item.topic));
             content.addView(row);
         }
     }
@@ -347,7 +425,15 @@ public class MainActivity extends Activity {
                                 + topic.lapseCount,
                         15,
                         Color.DKGRAY));
-        content.addView(text("Próximo repaso: " + dueText(topic), 16, Color.DKGRAY));
+        content.addView(
+                text(
+                        "Objetivo de recuerdo: "
+                                + StudyPreferences.percentageLabel(
+                                        memoryEngine.desiredRetention())
+                                + " · Próximo repaso: "
+                                + dueText(topic),
+                        16,
+                        Color.DKGRAY));
 
         EditText editor = new EditText(this);
         editor.setText(topic.notes);
@@ -604,6 +690,44 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void chooseRetention() {
+        String[] labels = {
+            "85% — menos carga de repasos",
+            "90% — equilibrio predeterminado",
+            "95% — mayor frecuencia de repasos"
+        };
+        int[] selected = {
+            StudyPreferences.optionIndex(memoryEngine.desiredRetention())
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Objetivo de recuerdo")
+                .setMessage(
+                        "El objetivo controla los intervalos que FSRS calculará en repasos futuros. Las fechas ya programadas no se reescriben.")
+                .setSingleChoiceItems(
+                        labels,
+                        selected[0],
+                        (dialog, which) -> selected[0] = which)
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton(
+                        "Guardar",
+                        (dialog, which) -> {
+                            double value = StudyPreferences.RETENTION_OPTIONS[selected[0]];
+                            StudyPreferences.writeDesiredRetention(prefs, value);
+                            if (repository != null) {
+                                repository.close();
+                            }
+                            memoryEngine = new FsrsMemoryEngine(value);
+                            repository = new StudyRepository(this, memoryEngine);
+                            showHome();
+                            Toast.makeText(
+                                            this,
+                                            "Objetivo actualizado. Se aplicará al próximo intervalo calculado.",
+                                            Toast.LENGTH_LONG)
+                                    .show();
+                        })
+                .show();
+    }
+
     private void chooseTime(boolean first) {
         TimePickerDialog dialog =
                 new TimePickerDialog(
@@ -779,10 +903,28 @@ public class MainActivity extends Activity {
         if (memoryPercent < 50) {
             return Color.rgb(237, 101, 135);
         }
-        if (memoryPercent < 90) {
+        if (memoryPercent < memoryEngine.desiredRetention() * 100.0) {
             return Color.rgb(246, 201, 84);
         }
         return Color.rgb(102, 204, 169);
+    }
+
+    private int priorityColor(DashboardModel.PriorityKind kind) {
+        return switch (kind) {
+            case MISSED -> Color.rgb(237, 101, 135);
+            case DUE -> Color.rgb(246, 150, 74);
+            case BELOW_TARGET -> Color.rgb(246, 201, 84);
+            case UPCOMING -> Color.rgb(112, 158, 246);
+        };
+    }
+
+    private static String priorityLabel(DashboardModel.PriorityKind kind) {
+        return switch (kind) {
+            case MISSED -> "Repaso omitido";
+            case DUE -> "Repaso pendiente";
+            case BELOW_TARGET -> "Por debajo del objetivo";
+            case UPCOMING -> "Próximo repaso";
+        };
     }
 
     private int dp(int value) {

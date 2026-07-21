@@ -12,6 +12,7 @@ public final class FsrsMemoryEngine {
     public static final long REVIEW_GRACE_PERIOD_MS = Duration.ofHours(24).toMillis();
 
     private final Scheduler scheduler;
+    private final double desiredRetention;
 
     public FsrsMemoryEngine() {
         this(DEFAULT_DESIRED_RETENTION);
@@ -21,6 +22,7 @@ public final class FsrsMemoryEngine {
         if (desiredRetention <= 0.0 || desiredRetention >= 1.0) {
             throw new IllegalArgumentException("desiredRetention debe estar entre 0 y 1");
         }
+        this.desiredRetention = desiredRetention;
         scheduler =
                 Scheduler.builder()
                         .desiredRetention(desiredRetention)
@@ -28,6 +30,10 @@ public final class FsrsMemoryEngine {
                         .relearningSteps(new Duration[] {})
                         .enableFuzzing(false)
                         .build();
+    }
+
+    public double desiredRetention() {
+        return desiredRetention;
     }
 
     public StudyTopic newTopic(
