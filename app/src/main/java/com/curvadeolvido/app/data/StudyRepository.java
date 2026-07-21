@@ -50,7 +50,24 @@ public final class StudyRepository {
                         }
                         dao.markOverdueSchedulesMissed(System.currentTimeMillis());
                         List<StudyTopic> topics = mapAggregates(dao.loadTopicAggregates());
-                        main.post(() -> callback.onResult(topics));
+                        boolean repairedInitialLearning = false;
+                        for (StudyTopic topic : topics) {
+                            if (engine.ensureInitialLearning(topic)) {
+                                dao.upsertTopic(toEntity(topic));
+                                if (topic.activeScheduleId > 0) {
+                                    dao.resetInitialSchedule(
+                                            topic.activeScheduleId,
+                                            topic.nextReviewAt,
+                                            topic.scheduleGraceDeadline);
+                                }
+                                repairedInitialLearning = true;
+                            }
+                        }
+                        if (repairedInitialLearning) {
+                            topics = mapAggregates(dao.loadTopicAggregates());
+                        }
+                        List<StudyTopic> loadedTopics = topics;
+                        main.post(() -> callback.onResult(loadedTopics));
                     } catch (Throwable error) {
                         main.post(() -> errorCallback.onError(error));
                     }
