@@ -7,5 +7,5 @@ backups/
 *.bak2
 *.zip
 *.apk
-!CurvaDeOlvido-memoria-dinamica.apk
+!CurvaDeOlvido-v1.3-fase4-debug.apk
 app/build/

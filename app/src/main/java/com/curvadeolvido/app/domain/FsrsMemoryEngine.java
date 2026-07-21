@@ -43,7 +43,6 @@ public final class FsrsMemoryEngine {
             String section,
             String notes,
             long createdAt) {
-        Card card = Card.builder().build();
         StudyTopic topic = new StudyTopic();
         topic.id = id;
         topic.name = safe(name);
@@ -51,11 +50,32 @@ public final class FsrsMemoryEngine {
         topic.section = safe(section);
         topic.notes = safe(notes);
         topic.createdAt = createdAt;
+        ensureInitialLearning(topic);
+        return topic;
+    }
+
+    /**
+     * Completa temas creados por una version anterior que aun no tenian aprendizaje inicial.
+     * No agrega un evento de repaso del usuario ni modifica cobertura o lapsos.
+     */
+    public boolean ensureInitialLearning(StudyTopic topic) {
+        Card existing = cardFrom(topic);
+        if (existing.getLastReview() != null) {
+            return false;
+        }
+        long learnedAt = topic.createdAt > 0 ? topic.createdAt : System.currentTimeMillis();
+        CardAndReviewLog initialLearning =
+                scheduler.reviewCard(
+                        Card.builder().build(),
+                        ReviewRating.GOOD.toFsrsRating(),
+                        Instant.ofEpochMilli(learnedAt),
+                        null);
+        Card card = initialLearning.card();
         topic.fsrsCardJson = card.toJson();
-        topic.nextReviewAt = Math.max(createdAt, card.getDue().toEpochMilli());
+        topic.nextReviewAt = card.getDue().toEpochMilli();
         topic.scheduleGraceDeadline = topic.nextReviewAt + REVIEW_GRACE_PERIOD_MS;
         topic.scheduleStatus = ReviewScheduleStatus.SCHEDULED;
-        return topic;
+        return true;
     }
 
     public ReviewResult review(

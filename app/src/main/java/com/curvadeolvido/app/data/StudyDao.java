@@ -43,6 +43,14 @@ public abstract class StudyDao {
     public abstract int markOverdueSchedulesMissed(long markedAt);
 
     @Query(
+            "UPDATE scheduled_reviews "
+                    + "SET scheduledAt = :scheduledAt, graceDeadline = :graceDeadline, "
+                    + "status = 'SCHEDULED', completedAt = 0, missedAt = 0 "
+                    + "WHERE id = :scheduleId")
+    public abstract void resetInitialSchedule(
+            long scheduleId, long scheduledAt, long graceDeadline);
+
+    @Query(
             "SELECT topics.* FROM topics "
                     + "INNER JOIN scheduled_reviews "
                     + "ON scheduled_reviews.id = topics.activeScheduleId "

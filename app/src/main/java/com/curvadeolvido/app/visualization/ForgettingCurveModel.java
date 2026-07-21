@@ -285,31 +285,32 @@ public final class ForgettingCurveModel {
             }
         }
 
-        if (result.isEmpty() && topic.lastReviewAt > 0) {
+        if (result.isEmpty() && (topic.lastReviewAt > 0 || topic.createdAt > 0)) {
             MemorySnapshot snapshot = engine.snapshot(topic, now);
             if (snapshot.stabilityDays > 0) {
-                long end = Math.max(topic.lastReviewAt + HOUR, window.endAt);
-                if (topic.lastReviewAt < now) {
+                long anchorReviewAt = topic.lastReviewAt > 0 ? topic.lastReviewAt : topic.createdAt;
+                long end = Math.max(anchorReviewAt + HOUR, window.endAt);
+                if (anchorReviewAt < now) {
                     result.add(
                             new Segment(
-                                    topic.lastReviewAt,
+                                    anchorReviewAt,
                                     now,
-                                    topic.lastReviewAt,
+                                    anchorReviewAt,
                                     snapshot.stabilityDays,
                                     false));
                     result.add(
                             new Segment(
                                     now,
                                     end,
-                                    topic.lastReviewAt,
+                                    anchorReviewAt,
                                     snapshot.stabilityDays,
                                     true));
                 } else {
                     result.add(
                             new Segment(
-                                    topic.lastReviewAt,
+                                    anchorReviewAt,
                                     end,
-                                    topic.lastReviewAt,
+                                    anchorReviewAt,
                                     snapshot.stabilityDays,
                                     true));
                 }
