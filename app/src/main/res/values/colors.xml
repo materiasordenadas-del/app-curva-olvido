@@ -1,0 +1,8 @@
+<resources>
+    <color name="blue_very_light">#E7F0FF</color>
+    <color name="blue_light">#8CB9FF</color>
+    <color name="blue_main">#246BCE</color>
+    <color name="blue_dark">#103A78</color>
+    <color name="ink">#172033</color>
+    <color name="surface">#F7F9FD</color>
+</resources>

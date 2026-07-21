@@ -1,0 +1,11 @@
+.gradle/
+.idea/
+local.properties
+Antiguo/
+backups/
+*.bak
+*.bak2
+*.zip
+*.apk
+!CurvaDeOlvido-memoria-dinamica.apk
+app/build/
