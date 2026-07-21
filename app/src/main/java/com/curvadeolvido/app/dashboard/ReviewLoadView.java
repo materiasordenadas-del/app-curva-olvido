@@ -14,7 +14,7 @@ public final class ReviewLoadView extends View {
     public ReviewLoadView(Context context, DashboardModel model) {
         super(context);
         this.model = model;
-        setMinimumHeight(dp(205));
+        setMinimumHeight(Math.round(dp(205)));
         setContentDescription(buildDescription());
     }
 
