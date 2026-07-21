@@ -17,6 +17,7 @@ public final class ForgettingCurveModel {
     public static final long DAY = 86_400_000L;
     public static final double DEFAULT_TARGET_RETENTION = 0.90;
     private static final int MAX_VISIBLE_REVIEW_EVENTS = 12;
+    private static final int MAX_VISIBLE_SCHEDULES = 12;
     // Java-FSRS 1.0 default forgetting curve: DECAY = -w20, w20 = 0.2.
     private static final double FSRS_DECAY = -0.2;
     private static final double FSRS_FACTOR = Math.pow(0.9, 1.0 / FSRS_DECAY) - 1.0;
@@ -130,10 +131,12 @@ public final class ForgettingCurveModel {
             long now,
             double targetRetention) {
         List<ReviewEvent> events = meaningfulEvents(topic.reviewEvents);
-        Window window = adaptiveWindow(topic, events, now);
+        List<ScheduledReview> schedules = visibleSchedules(topic.scheduledReviews);
+        Window window = adaptiveWindow(topic, events, schedules, now);
         List<Segment> segments = buildSegments(topic, events, engine, window, now);
         List<Reset> resets = buildResets(events);
-        List<Marker> markers = buildMarkers(topic, events, segments, window, now);
+        List<Marker> markers =
+                buildMarkers(topic, events, schedules, segments, window, now);
         return new ForgettingCurveModel(
                 window,
                 segments,
@@ -164,13 +167,27 @@ public final class ForgettingCurveModel {
         return events;
     }
 
+    private static List<ScheduledReview> visibleSchedules(List<ScheduledReview> source) {
+        ArrayList<ScheduledReview> schedules = new ArrayList<>(source);
+        schedules.sort(Comparator.comparingLong(item -> item.scheduledAt));
+        if (schedules.size() > MAX_VISIBLE_SCHEDULES) {
+            return new ArrayList<>(
+                    schedules.subList(
+                            schedules.size() - MAX_VISIBLE_SCHEDULES, schedules.size()));
+        }
+        return schedules;
+    }
+
     private static Window adaptiveWindow(
-            StudyTopic topic, List<ReviewEvent> events, long now) {
+            StudyTopic topic,
+            List<ReviewEvent> events,
+            List<ScheduledReview> schedules,
+            long now) {
         long earliest = topic.createdAt > 0 ? topic.createdAt : now;
         if (!events.isEmpty()) {
             earliest = events.get(0).reviewedAt;
         }
-        for (ScheduledReview schedule : topic.scheduledReviews) {
+        for (ScheduledReview schedule : schedules) {
             if (schedule.scheduledAt > 0 && schedule.scheduledAt < earliest) {
                 earliest = schedule.scheduledAt;
             }
@@ -180,7 +197,7 @@ public final class ForgettingCurveModel {
         for (ReviewEvent event : events) {
             latest = Math.max(latest, event.reviewedAt);
         }
-        for (ScheduledReview schedule : topic.scheduledReviews) {
+        for (ScheduledReview schedule : schedules) {
             latest = Math.max(latest, schedule.scheduledAt);
             latest = Math.max(latest, schedule.completedAt);
             latest = Math.max(latest, schedule.missedAt);
@@ -316,6 +333,7 @@ public final class ForgettingCurveModel {
     private static List<Marker> buildMarkers(
             StudyTopic topic,
             List<ReviewEvent> events,
+            List<ScheduledReview> schedules,
             List<Segment> segments,
             Window window,
             long now) {
@@ -347,7 +365,7 @@ public final class ForgettingCurveModel {
         }
 
         boolean activeScheduleMissed = false;
-        for (ScheduledReview schedule : topic.scheduledReviews) {
+        for (ScheduledReview schedule : schedules) {
             boolean inferredMissed =
                     schedule.status == ReviewScheduleStatus.SCHEDULED
                             && schedule.graceDeadline > 0
