@@ -1,26 +1,19 @@
 package com.curvadeolvido.app;
 
 import android.Manifest;
-import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.app.TimePickerDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.Gravity;
@@ -43,6 +36,7 @@ import com.curvadeolvido.app.domain.ReviewResult;
 import com.curvadeolvido.app.domain.ReviewScheduleStatus;
 import com.curvadeolvido.app.domain.ScheduledReview;
 import com.curvadeolvido.app.domain.StudyTopic;
+import com.curvadeolvido.app.visualization.ForgettingCurveView;
 import java.io.ByteArrayOutputStream;
 import java.text.DateFormat;
 import java.util.ArrayList;
@@ -53,7 +47,6 @@ import java.util.TreeMap;
 import java.util.UUID;
 
 public class MainActivity extends Activity {
-    private static final long DAY = 86_400_000L;
     private static final int BLUE = Color.rgb(55, 115, 220);
 
     private final ArrayList<StudyTopic> topics = new ArrayList<>();
@@ -122,7 +115,7 @@ public class MainActivity extends Activity {
         content.addView(text("Biblioteca de estudio", 28, Color.WHITE));
         TextView subtitle =
                 text(
-                        "Cobertura y recuperación se calculan por separado",
+                        "Cobertura, recuperación y cumplimiento se registran por separado",
                         15,
                         Color.rgb(198, 184, 245));
         subtitle.setPadding(0, 6, 0, 16);
@@ -161,26 +154,25 @@ public class MainActivity extends Activity {
 
         ArrayList<StudyTopic> ordered = new ArrayList<>(topics);
         ordered.sort(Comparator.comparingDouble(this::currentMemory));
-        for (int i = 0; i < Math.min(3, ordered.size()); i++) {
-            StudyTopic topic = ordered.get(i);
+        for (int index = 0; index < Math.min(3, ordered.size()); index++) {
+            StudyTopic topic = ordered.get(index);
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(12, 8, 12, 8);
+            row.setPadding(14, 10, 14, 10);
             row.setBackground(round(Color.rgb(42, 42, 46), 12));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+            params.setMargins(0, 2, 0, 3);
+            row.setLayoutParams(params);
 
-            row.addView(
-                    new HeadMemoryView(this, (float) currentMemory(topic)),
-                    new LinearLayout.LayoutParams(46, 58));
+            TextView percent =
+                    text(Math.round(currentMemory(topic)) + "%", 20, memoryColor(currentMemory(topic)));
+            percent.setGravity(Gravity.CENTER);
+            row.addView(percent, new LinearLayout.LayoutParams(64, 54));
+
             LinearLayout labels = new LinearLayout(this);
             labels.setOrientation(LinearLayout.VERTICAL);
             labels.addView(text(topic.name, 16, Color.WHITE));
-            labels.addView(
-                    text(
-                            Math.round(currentMemory(topic))
-                                    + "% de recuerdo estimado · "
-                                    + dueText(topic),
-                            13,
-                            Color.LTGRAY));
+            labels.addView(text(dueText(topic), 13, Color.LTGRAY));
             row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
             row.setOnClickListener(v -> showPage(topic));
             content.addView(row);
@@ -203,7 +195,6 @@ public class MainActivity extends Activity {
             TextView categoryTitle = text(category, 20, Color.WHITE);
             categoryTitle.setPadding(4, 22, 4, 8);
             content.addView(categoryTitle);
-
             for (String section : library.get(category).keySet()) {
                 TextView sectionTitle = text(section, 16, Color.rgb(205, 205, 215));
                 sectionTitle.setPadding(18, 6, 4, 4);
@@ -256,7 +247,16 @@ public class MainActivity extends Activity {
         TextView title = text(topic.name, 28, Color.rgb(23, 32, 51));
         title.setPadding(0, 10, 0, 10);
         content.addView(title);
-        content.addView(new CurveView(this, topic, memoryEngine));
+
+        ForgettingCurveView curve = new ForgettingCurveView(this, topic, memoryEngine);
+        content.addView(curve, new LinearLayout.LayoutParams(-1, dp(480)));
+        TextView curveHelp =
+                text(
+                        "Toca un marcador para ver su fecha y el recuerdo estimado en ese punto.",
+                        13,
+                        Color.DKGRAY);
+        curveHelp.setPadding(2, 6, 2, 10);
+        content.addView(curveHelp);
 
         MemorySnapshot snapshot = memoryEngine.snapshot(topic, System.currentTimeMillis());
         content.addView(
@@ -273,7 +273,9 @@ public class MainActivity extends Activity {
                         "Estabilidad: "
                                 + oneDecimal(snapshot.stabilityDays)
                                 + " días · Dificultad: "
-                                + oneDecimal(snapshot.difficulty),
+                                + oneDecimal(snapshot.difficulty)
+                                + " · Lapsos: "
+                                + topic.lapseCount,
                         15,
                         Color.DKGRAY));
         content.addView(text("Próximo repaso: " + dueText(topic), 16, Color.DKGRAY));
@@ -313,7 +315,7 @@ public class MainActivity extends Activity {
         content.addView(
                 text(
                         "Estado actual: "
-                                + statusLabel(topic.scheduleStatus)
+                                + statusLabel(effectiveStatus(topic))
                                 + " · "
                                 + formatDateTime(topic.nextReviewAt),
                         15,
@@ -322,14 +324,14 @@ public class MainActivity extends Activity {
         ArrayList<ScheduledReview> history = new ArrayList<>(topic.scheduledReviews);
         history.sort(
                 Comparator.comparingLong((ScheduledReview item) -> item.scheduledAt).reversed());
-        for (int i = 0; i < Math.min(5, history.size()); i++) {
-            ScheduledReview review = history.get(i);
+        for (int index = 0; index < Math.min(8, history.size()); index++) {
+            ScheduledReview review = history.get(index);
             content.addView(
                     text(
                             "• "
                                     + formatDateTime(review.scheduledAt)
                                     + " — "
-                                    + statusLabel(review.status),
+                                    + statusLabel(effectiveStatus(review)),
                             14,
                             Color.DKGRAY));
         }
@@ -427,7 +429,6 @@ public class MainActivity extends Activity {
     private void logStudy(StudyTopic topic) {
         pendingPhoto = "";
         LinearLayout form = form();
-
         EditText coverage = field("Cobertura añadida hoy, 0–100 (opcional)");
         coverage.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         EditText studied = field("Qué intentaste recuperar");
@@ -498,7 +499,6 @@ public class MainActivity extends Activity {
                                             methodValue,
                                             remaining.getText().toString(),
                                             pendingPhoto);
-
                             repository.recordReview(
                                     result.topic,
                                     result.event,
@@ -584,12 +584,31 @@ public class MainActivity extends Activity {
     }
 
     private String dueText(StudyTopic topic) {
+        ReviewScheduleStatus status = effectiveStatus(topic);
         if (memoryEngine.isDue(topic, System.currentTimeMillis())) {
-            return topic.scheduleStatus == ReviewScheduleStatus.MISSED
+            return status == ReviewScheduleStatus.MISSED
                     ? "repaso omitido y pendiente"
                     : "pendiente ahora";
         }
         return formatDateTime(topic.nextReviewAt);
+    }
+
+    private ReviewScheduleStatus effectiveStatus(StudyTopic topic) {
+        if (topic.scheduleStatus == ReviewScheduleStatus.SCHEDULED
+                && topic.scheduleGraceDeadline > 0
+                && System.currentTimeMillis() > topic.scheduleGraceDeadline) {
+            return ReviewScheduleStatus.MISSED;
+        }
+        return topic.scheduleStatus;
+    }
+
+    private ReviewScheduleStatus effectiveStatus(ScheduledReview review) {
+        if (review.status == ReviewScheduleStatus.SCHEDULED
+                && review.graceDeadline > 0
+                && System.currentTimeMillis() > review.graceDeadline) {
+            return ReviewScheduleStatus.MISSED;
+        }
+        return review.status;
     }
 
     private void showDataError(Throwable error) {
@@ -655,6 +674,20 @@ public class MainActivity extends Activity {
         return shape;
     }
 
+    private int memoryColor(double memoryPercent) {
+        if (memoryPercent < 50) {
+            return Color.rgb(237, 101, 135);
+        }
+        if (memoryPercent < 90) {
+            return Color.rgb(246, 201, 84);
+        }
+        return Color.rgb(102, 204, 169);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
     private static int parseCoverage(String value) {
         if (value == null || value.trim().isEmpty()) {
             return 0;
@@ -690,230 +723,5 @@ public class MainActivity extends Activity {
             case COMPLETED_LATE -> "completado tarde";
             case MIGRATED -> "registro migrado";
         };
-    }
-
-    static final class CurveView extends View {
-        private final StudyTopic topic;
-        private final FsrsMemoryEngine engine;
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Handler handler = new Handler(Looper.getMainLooper());
-        private float reveal;
-
-        private final Runnable tick =
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        invalidate();
-                        handler.postDelayed(this, 60_000);
-                    }
-                };
-
-        CurveView(Context context, StudyTopic topic, FsrsMemoryEngine engine) {
-            super(context);
-            this.topic = topic;
-            this.engine = engine;
-            setMinimumHeight(340);
-        }
-
-        @Override
-        protected void onAttachedToWindow() {
-            super.onAttachedToWindow();
-            ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
-            animator.setDuration(600);
-            animator.addUpdateListener(
-                    value -> {
-                        reveal = (float) value.getAnimatedValue();
-                        invalidate();
-                    });
-            animator.start();
-            handler.post(tick);
-        }
-
-        @Override
-        protected void onDetachedFromWindow() {
-            handler.removeCallbacks(tick);
-            super.onDetachedFromWindow();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            float width = getWidth();
-            float height = getHeight();
-            float left = 45;
-            float right = width - 16;
-            float top = 70;
-            float bottom = height - 92;
-
-            long start = topic.lastReviewAt > 0 ? topic.lastReviewAt : topic.createdAt;
-            float dueDays = Math.max(1f, (topic.nextReviewAt - start) / (float) DAY);
-            float horizonDays = Math.min(365f, Math.max(7f, dueDays * 2f));
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.rgb(232, 242, 255));
-            canvas.drawRoundRect(0, 0, width, height, 22, 22, paint);
-            paint.setColor(Color.rgb(16, 58, 120));
-            paint.setTextSize(23);
-            canvas.drawText("Curva del tema", 20, 34, paint);
-
-            drawAxes(canvas, left, right, top, bottom, horizonDays);
-            drawCurve(canvas, left, right, top, bottom, start, horizonDays);
-
-            long now = System.currentTimeMillis();
-            float elapsedDays = Math.max(0f, now - start) / (float) DAY;
-            float memory = (float) (engine.retrievability(topic, now) * 100.0);
-            float x = xForDay(left, right, elapsedDays, horizonDays);
-            float y = yForMemory(top, bottom, memory);
-            drawHead(canvas, x, y, memory * reveal);
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.rgb(23, 43, 70));
-            paint.setTextSize(16);
-            canvas.drawText(
-                    "Recuerdo: "
-                            + Math.round(memory)
-                            + "% · Olvido: "
-                            + Math.round(100 - memory)
-                            + "%",
-                    20,
-                    height - 22,
-                    paint);
-        }
-
-        private void drawAxes(
-                Canvas canvas,
-                float left,
-                float right,
-                float top,
-                float bottom,
-                float horizonDays) {
-            paint.setStrokeWidth(1);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setColor(Color.rgb(197, 207, 222));
-            for (int percent = 0; percent <= 100; percent += 25) {
-                float y = yForMemory(top, bottom, percent);
-                canvas.drawLine(left, y, right, y, paint);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setTextSize(12);
-                paint.setColor(Color.rgb(54, 66, 84));
-                canvas.drawText(percent + "%", 3, y + 4, paint);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setColor(Color.rgb(197, 207, 222));
-            }
-            for (int index = 0; index <= 4; index++) {
-                float day = horizonDays * index / 4f;
-                float x = xForDay(left, right, day, horizonDays);
-                canvas.drawLine(x, top, x, bottom, paint);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setTextSize(10);
-                paint.setColor(Color.rgb(54, 66, 84));
-                canvas.drawText(Math.round(day) + "d", x - 8, bottom + 18, paint);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setColor(Color.rgb(197, 207, 222));
-            }
-        }
-
-        private void drawCurve(
-                Canvas canvas,
-                float left,
-                float right,
-                float top,
-                float bottom,
-                long start,
-                float horizonDays) {
-            int samples = 120;
-            long stepMillis = (long) (horizonDays * DAY / samples);
-            double[] projected =
-                    engine.retrievabilitySeries(topic, start, stepMillis, samples + 1);
-            Path path = new Path();
-            for (int sample = 0; sample <= samples; sample++) {
-                float day = horizonDays * sample / samples;
-                float x = xForDay(left, right, day, horizonDays);
-                float y = yForMemory(top, bottom, (float) (projected[sample] * 100.0));
-                if (sample == 0) {
-                    path.moveTo(x, y);
-                } else {
-                    path.lineTo(x, y);
-                }
-            }
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(4);
-            paint.setColor(BLUE);
-            canvas.drawPath(path, paint);
-        }
-
-        private void drawHead(Canvas canvas, float x, float y, float memory) {
-            Path head = headPath(x, y);
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.WHITE);
-            canvas.drawPath(head, paint);
-            canvas.save();
-            canvas.clipPath(head);
-            float fillTop = y + 36 - 72 * memory / 100f;
-            paint.setColor(Color.rgb(91, 202, 169));
-            canvas.drawRect(x - 29, fillTop, x + 29, y + 38, paint);
-            canvas.restore();
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(2);
-            paint.setColor(Color.rgb(58, 68, 82));
-            canvas.drawPath(head, paint);
-        }
-
-        private static Path headPath(float x, float y) {
-            Path path = new Path();
-            path.moveTo(x, y - 36);
-            path.cubicTo(x - 27, y - 36, x - 30, y - 16, x - 29, y + 2);
-            path.cubicTo(x - 28, y + 18, x - 18, y + 25, x - 13, y + 29);
-            path.lineTo(x - 13, y + 38);
-            path.quadTo(x, y + 44, x + 13, y + 38);
-            path.lineTo(x + 13, y + 29);
-            path.cubicTo(x + 18, y + 25, x + 28, y + 18, x + 29, y + 2);
-            path.cubicTo(x + 30, y - 16, x + 27, y - 36, x, y - 36);
-            path.close();
-            return path;
-        }
-
-        private static float xForDay(
-                float left, float right, float day, float horizonDays) {
-            return left
-                    + (right - left)
-                            * Math.min(1f, Math.max(0f, day / Math.max(1f, horizonDays)));
-        }
-
-        private static float yForMemory(
-                float top, float bottom, float memory) {
-            return bottom
-                    - (bottom - top)
-                            * Math.max(0f, Math.min(100f, memory))
-                            / 100f;
-        }
-    }
-
-    static final class HeadMemoryView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final float memory;
-
-        HeadMemoryView(Context context, float memory) {
-            super(context);
-            this.memory = memory;
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            float x = getWidth() / 2f;
-            float y = getHeight() / 2f;
-            Path path = CurveView.headPath(x, y);
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.WHITE);
-            canvas.drawPath(path, paint);
-            canvas.save();
-            canvas.clipPath(path);
-            paint.setColor(Color.rgb(91, 202, 169));
-            canvas.drawRect(0, y + 25 - 50 * memory / 100f, getWidth(), getHeight(), paint);
-            canvas.restore();
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.5f);
-            paint.setColor(Color.rgb(110, 120, 135));
-            canvas.drawPath(path, paint);
-        }
     }
 }
